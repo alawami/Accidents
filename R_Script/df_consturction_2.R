@@ -801,7 +801,7 @@ dat <- dat %>% select(response, ID, CASEID, CASENO, PSU, RATWGT, STRATIF, VID, O
                       VEHTYPE, CLASS1, CLASS2, otbdytyp2, INSPTYPE, PREVACC, VEHNO,
                       SURCOND, SURTYPE, LGTCOND, CLIMATE,
                       GADEV1, GADEV2,
-                      ABELTUSE, MANUSE)
+                      ABELTUSE, MANUSE, PARUSE)
 
 dat <- select(dat, -VEHNO, -VID, -OID, -YID, -ID)
 
@@ -853,13 +853,28 @@ dat <- mutate(dat,
                                       VINMAKE)))))))))))))))))))
 )
 
-# Construct SEATBELT variable
+# Construct SEATBELT variable (Overwritten below)
 dat <- mutate(dat,
               SEATBELT = ifelse(is.na(ABELTUSE) & is.na(MANUSE), NA,
                                 ifelse(MANUSE %in% c(2:5, 8, 12:15, 18) | ABELTUSE == 1, "in-use",
                                        ifelse(MANUSE %in% c(0, 1) | ABELTUSE %in% c(0, 2), "not-used", NA)))
 )
-dat <- select(dat, -ABELTUSE, -MANUSE)
+
+
+dat <- dat %>% mutate(
+  MANPROPER = ifelse(is.na(MANUSE), NA,
+                     ifelse(MANUSE == 0, "not-used",
+                            ifelse(MANUSE == 4, "used-properly", "used-unknown"))),
+  PARPROPER = ifelse(is.na(PARUSE) | PARUSE %in% c(1, 10), NA,
+                     ifelse(PARUSE %in% c(0, 2, 3), "not-used-properly",
+                            ifelse(PARUSE == 4, "used-properly",
+                                   ifelse(PARUSE %in% c(5, 8), "used-unknown", PARUSE)))),
+  
+  SEATBELT = ifelse(!is.na(PARPROPER), PARPROPER, MANPROPER),
+  SEATBELT = ifelse(is.na(SEATBELT), NA,
+                    ifelse(SEATBELT %in% c("not-used", "not-used-properly", "used-unknown"), "No_Proper_Belt",
+                           "Proper_Belt")))
+dat <- select(dat, -ABELTUSE, -MANUSE, -PARUSE)
 
 dat <- mutate(dat,
               response = factor(response),
@@ -925,7 +940,7 @@ temp <- select(entire.data, SEX, MAKE, VINMAKE, MODEL, VINAMOD, MODELYR, VINMODY
                DVBASIS, DVCONFID, DVEST, DVTOTAL, DVLAT, DVLONG, ENERGY, TRAVELSP, SPLIMIT, ACCTYPE, SURCOND,
                SURTYPE, LGTCOND, CLIMATE, MANCOLL,
                MONTH, TIME, YEAR,
-               ABELTUSE, MANUSE,
+               ABELTUSE, MANUSE, PARUSE,
                ROLE, YVID) %>% filter(ROLE == 1) %>% select(-ROLE)
 emptyRow <- apply(temp, MARGIN = 1, function(x){ all(is.na(x)) })
 temp <- temp[!emptyRow, ]
@@ -956,13 +971,23 @@ temp <- mutate(temp,
                MANCOLL = factor(MANCOLL),
                CLIMATE = factor(CLIMATE),
                MONTH = factor(MONTH),
-               SEATBELT = ifelse(is.na(ABELTUSE) & is.na(MANUSE), NA,
-                                 ifelse(MANUSE %in% c(2:5, 8, 12:15, 18) | ABELTUSE == 1, "in-use",
-                                        ifelse(MANUSE %in% c(0, 1) | ABELTUSE %in% c(0, 2), "not-used", NA)))
+               # Better to make the else statement so that it is explicity and throws an error otherwise
+               MANPROPER = ifelse(is.na(MANUSE), NA,
+                                  ifelse(MANUSE == 0, "not-used",
+                                         ifelse(MANUSE == 4, "used-properly", "used-unknown"))),
+               PARPROPER = ifelse(is.na(PARUSE) | PARUSE %in% c(1, 10), NA,
+                                  ifelse(PARUSE %in% c(0, 2, 3), "not-used-properly",
+                                         ifelse(PARUSE == 4, "used-properly",
+                                                ifelse(PARUSE %in% c(5, 8), "used-unknown", PARUSE)))),
+               
+               SEATBELT = ifelse(!is.na(PARPROPER), PARPROPER, MANPROPER),
+               SEATBELT = ifelse(is.na(SEATBELT), NA,
+                                 ifelse(SEATBELT %in% c("not-used", "not-used-properly", "used-unknown"), "No_Proper_Belt",
+                                        "Proper_Belt"))
                )
 
 # Using missForest
-# convert  to data.frame to avoid errors in missForest
+# convert to data.frame to avoid errors in missForest
 # missForest(as.data.frame(temp))
 
 # Using caret
@@ -970,14 +995,15 @@ temp1 <- filter(temp, !is.na(SEX))
 
 set.seed(42)
 sexImputeModel <- train(
-  SEX ~ MAKE + MODEL + VINMODYR + BODYTYPE + CURBWGT + WEIGHT + HEIGHT,
+  SEX ~ # MAKE + MODEL + VINMODYR + BODYTYPE + CURBWGT + 
+    BODYTYPE + WEIGHT + HEIGHT,
   data = temp1, 
   method = "rpart",
   trControl = trainControl(method = "cv", number = 5, verboseIter = TRUE),
   na.action = na.rpart
 )
 
-datImp$SEX[is.na(datImp$SEX)] <- predict(sexImputeModel, newdata = dat[is.na(dat$SEX), ], 
+datImp$SEX[is.na(dat$SEX)] <- predict(sexImputeModel, newdata = dat[is.na(dat$SEX), ], 
                                          na.action = na.rpart)
 
 # Rpart model
@@ -998,16 +1024,18 @@ datImp$SEX[is.na(datImp$SEX)] <- predict(sexImputeModel, newdata = dat[is.na(dat
 ### Impute AGE -------------------------------------------------------------------------------------
 temp2 <- filter(temp, !is.na(AGE))
 
+# Consider including SEATBELT
 set.seed(42)
 ageImputeModel <- train(
-  AGE ~ MAKE + MODEL + VINMODYR + BODYTYPE + CURBWGT + SEX,
+  AGE ~ # MAKE + MODEL + VINMODYR + BODYTYPE + CURBWGT + 
+    BODYTYPE + SEX,
   data = temp2, 
   method = "rpart",
   trControl = trainControl(method = "cv", number = 5, verboseIter = TRUE),
   na.action = na.rpart
 )
 
-datImp$AGE[is.na(datImp$AGE)] <- predict(ageImputeModel, newdata = dat[is.na(dat$AGE), ], 
+datImp$AGE[is.na(dat$AGE)] <- predict(ageImputeModel, newdata = dat[is.na(dat$AGE), ], 
                                          na.action = na.rpart)
 
 ### Impute HEIGHT ----------------------------------------------------------------------------------
@@ -1016,32 +1044,38 @@ temp3 <- filter(temp, !is.na(HEIGHT))
 
 set.seed(42)
 heightImputeModel <- train(
-  HEIGHT ~ MAKE + MODEL + VINMODYR + BODYTYPE + CURBWGT + SEX,
+  HEIGHT ~ # MAKE + MODEL + VINMODYR + BODYTYPE + CURBWGT + 
+    SEX,
   data = temp3, 
   method = "rpart",
   trControl = trainControl(method = "cv", number = 5, verboseIter = TRUE),
   na.action = na.rpart
 )
 
-datImp$HEIGHT[is.na(datImp$HEIGHT)] <- predict(heightImputeModel, newdata = dat[is.na(dat$HEIGHT), ], 
+# datImp$HEIGHT[is.na(dat$HEIGHT)] <- predict(heightImputeModel, newdata = dat[is.na(dat$HEIGHT), ], 
                                          na.action = na.rpart)
 
+datImp$HEIGHT[is.na(dat$HEIGHT)] <- predict(heightImputeModel, newdata = datImp[is.na(dat$HEIGHT), ], 
+                                         na.action = na.rpart)
 ### Impute WEIGHT ----------------------------------------------------------------------------------
 
 temp4 <- filter(temp, !is.na(WEIGHT))
 
 set.seed(42)
 weightImputeModel <- train(
-  WEIGHT ~ MAKE + MODEL + VINMODYR + BODYTYPE + CURBWGT + SEX + WHEELBAS,
+  WEIGHT ~ # MAKE + MODEL + VINMODYR + BODYTYPE + CURBWGT + 
+    SEX + AGE,
   data = temp4, 
   method = "rpart",
   trControl = trainControl(method = "cv", number = 5, verboseIter = TRUE),
   na.action = na.rpart
 )
 
-datImp$WEIGHT[is.na(datImp$WEIGHT)] <- predict(weightImputeModel, newdata = dat[is.na(dat$WEIGHT), ], 
-                                         na.action = na.rpart)
+# datImp$WEIGHT[is.na(dat$WEIGHT)] <- predict(weightImputeModel, newdata = dat[is.na(dat$WEIGHT), ],
+#                                          na.action = na.rpart)
 
+datImp$WEIGHT[is.na(dat$WEIGHT)] <- predict(weightImputeModel, newdata = datImp[is.na(dat$WEIGHT), ], 
+                                         na.action = na.rpart)
 ### Impute DVEST1, DVEST2, DVTOTAL -----------------------------------------------------------------
 
 temp5 <- filter(temp, !is.na(DVEST1))
@@ -1050,7 +1084,8 @@ temp7 <- filter(temp, !is.na(DVTOTAL))
 
 set.seed(42)
 dvest1ImputeModel <- train(
-  ordered(DVEST1) ~ MAKE + MODEL + VINMODYR + BODYTYPE + CURBWGT + SEX + AGE + DVTOTAL + DVEST2 + TRAVELSP + SPLIMIT 
+  ordered(DVEST1) ~ #MAKE + MODEL + VINMODYR + BODYTYPE + 
+    SEX + AGE + DVTOTAL + DVEST2 + TRAVELSP + SPLIMIT 
   + ENERGY + ACCTYPE + SURCOND + SURTYPE + LGTCOND + CLIMATE + MONTH + TIME + YEAR,
   data = temp5, 
   method = "rpart",
@@ -1058,12 +1093,13 @@ dvest1ImputeModel <- train(
   na.action = na.rpart
 )
 
-datImp$DVEST1[is.na(datImp$DVEST1)] <- predict(dvest1ImputeModel, newdata = dat[is.na(dat$DVEST1), ], 
+datImp$DVEST1[is.na(dat$DVEST1)] <- predict(dvest1ImputeModel, newdata = dat[is.na(dat$DVEST1), ], 
                                          na.action = na.rpart)
 
 set.seed(42)
 dvest2ImputeModel <- train(
-  ordered(DVEST2) ~ MAKE + MODEL + VINMODYR + BODYTYPE + CURBWGT + SEX + AGE + DVTOTAL + DVEST1 + TRAVELSP + SPLIMIT 
+  ordered(DVEST2) ~ #MAKE + MODEL + VINMODYR + BODYTYPE + 
+    SEX + AGE + DVTOTAL + DVEST1 + TRAVELSP + SPLIMIT 
   + ENERGY + ACCTYPE + SURCOND + SURTYPE + LGTCOND + CLIMATE + MONTH + TIME + YEAR,
   data = temp6, 
   method = "rpart",
@@ -1071,12 +1107,13 @@ dvest2ImputeModel <- train(
   na.action = na.rpart
 )
 
-datImp$DVEST2[is.na(datImp$DVEST2)] <- predict(dvest2ImputeModel, newdata = dat[is.na(dat$DVEST2), ], 
+datImp$DVEST2[is.na(dat$DVEST2)] <- predict(dvest2ImputeModel, newdata = dat[is.na(dat$DVEST2), ], 
                                          na.action = na.rpart)
 
 set.seed(42)
 dvtotalImputeModel <- train(
-  DVTOTAL ~ MAKE + MODEL + VINMODYR + BODYTYPE + CURBWGT + SEX + AGE + DVEST1 + DVEST2 + TRAVELSP + SPLIMIT 
+  DVTOTAL ~ #MAKE + MODEL + VINMODYR + BODYTYPE + 
+    SEX + AGE + DVEST1 + DVEST2 + TRAVELSP + SPLIMIT 
   + ENERGY + ACCTYPE + SURCOND + SURTYPE + LGTCOND + CLIMATE + MONTH + TIME + YEAR,
   data = temp7, 
   method = "rpart",
@@ -1084,7 +1121,7 @@ dvtotalImputeModel <- train(
   na.action = na.rpart
 )
 
-datImp$DVTOTAL[is.na(datImp$DVTOTAL)] <- predict(dvtotalImputeModel, newdata = dat[is.na(dat$DVTOTAL), ], 
+datImp$DVTOTAL[is.na(dat$DVTOTAL)] <- predict(dvtotalImputeModel, newdata = dat[is.na(dat$DVTOTAL), ], 
                                          na.action = na.rpart)
 
 dvpred <- data.frame(dvest1pred = predict(dvest1ImputeModel, newdata = temp, na.action = na.rpart),
@@ -1115,14 +1152,14 @@ temp8 <- filter(temp, !is.na(CURBWGT))
 
 set.seed(42)
 curbwgtImputeModel <- train(
-  CURBWGT ~ MAKE + MODEL + VINMODYR + BODYTYPE + VEHWGT,
+  CURBWGT ~ MAKE + MODEL + VINMODYR + BODYTYPE + VEHWGT,# + WHEELBAS,
   data = temp8, 
   method = "rpart",
   trControl = trainControl(method = "cv", number = 5, verboseIter = TRUE),
   na.action = na.rpart
 )
 
-datImp$CURBWGT[is.na(datImp$CURBWGT)] <- predict(curbwgtImputeModel, newdata = dat[is.na(dat$CURBWGT), ], 
+datImp$CURBWGT[is.na(dat$CURBWGT)] <- predict(curbwgtImputeModel, newdata = dat[is.na(dat$CURBWGT), ], 
                                          na.action = na.rpart)
 
 temp10 <- mutate(entire.data, 
@@ -1145,9 +1182,32 @@ lkup2 <- mutate(lkup2, oYVID = str_c(str_sub(YVID, end = 5), as.numeric(str_sub(
   select(-oYVID, -CURBWGTpred) %>%
   distinct()
 
-datImp[is.na(datImp$otvehwgt2), 'otvehwgt2'] <- datImp[is.na(datImp$otvehwgt2), c('YVID')] %>% 
+datImp[is.na(dat$otvehwgt2), 'otvehwgt2'] <- datImp[is.na(dat$otvehwgt2), c('YVID')] %>% 
   left_join(lkup2, by = c('YVID')) %>% select(otvehwgt2pred)
 
+
+
+# temp11 <- filter(temp, !is.na(o))
+# 
+# set.seed(42)
+# curbwgtImputeModel <- train(
+#   CURBWGT ~ MAKE + MODEL + VINMODYR + BODYTYPE + VEHWGT,
+#   data = temp8, 
+#   method = "rpart",
+#   trControl = trainControl(method = "cv", number = 5, verboseIter = TRUE),
+#   na.action = na.rpart
+# )
+# 
+# datImp$CURBWGT[is.na(datImp$CURBWGT)] <- predict(curbwgtImputeModel, newdata = dat[is.na(dat$CURBWGT), ], 
+#                                                  na.action = na.rpart)
+# 
+# temp10 <- mutate(entire.data, 
+#                  MAKE = factor(MAKE),
+#                  MODEL = factor(MODEL),
+#                  BODYTYPE = factor(BODYTYPE)) %>% 
+#   filter(!(MAKE %in% c(50, 71:73, 76, 78, 79, 84:87, 98)),
+#          !(MODEL %in% c(705, 706, 709, 799, 880:884, 890, 898, 899, 981, 982, 988, 989)))
+# temp10$CURBWGTpred <- predict(curbwgtImputeModel, newdata = temp10, na.action = na.rpart)
 
 # curbwgt.model <- rpart(CURBWGT ~ factor(MAKE) + VINMAKE + factor(MODEL) + VINAMOD + factor(MODELYR) + 
 #                          factor(VINMODYR) + factor(BODYTYPE) + VINBT + VEHWGT, 
@@ -1180,8 +1240,16 @@ seatbeltImputeModel <- train(
   na.action = na.rpart
 )
 
-datImp$SEATBELT[is.na(datImp$SEATBELT)] <- predict(seatbeltImputeModel, newdata = dat[is.na(dat$SEATBELT), ], 
-                                               na.action = na.rpart)
+# Imputation will result in all being
+# datImp$SEATBELT[is.na(datSEATBELT)] <- predict(seatbeltImputeModel, newdata = dat[is.na(dat$SEATBELT), ],
+#                                                 na.action = na.rpart)
+
+
+# Setting threshold and calculating the accuracy
+# mean(ifelse(predict(seatbeltImputeModel, newdata = dat[!is.na(dat$SEATBELT), ], 
+#                type = "prob", na.action = na.rpart)[, 1] >= .3, "No_Proper_Belt", "Proper_Belt") ==
+#        dat[!is.na(dat$SEATBELT), "SEATBELT"])
+
 
 ## Check party package for handling missing values
 ## Check randomForestSRC also
@@ -1248,11 +1316,20 @@ xtabs(~ df$NEWCAR + (is.na(df$INJSEV) & is.na(df$TREATMNT)))
 
 
 
+a <- dat %>% left_join(entire.data %>% select(YOID, YVID, YID, ID)) %>% filter(is.na(otvehwgt2)) %>% select(YVID, YID)
+
+a %>% 
+  semi_join(entire.data, ., by = "YID") %>% filter(YVID == "2009-2-7-2") %>% 
+  select(MAKE, MODEL, VINMODYR, BODYTYPE, VEHWGT) %>% 
+  mutate(MAKE = factor(MAKE),
+         MODEL = factor(MODEL),
+         BODYTYPE = factor(BODYTYPE)) %>% 
+  predict(curbwgtImputeModel, newdata = ., na.action = na.rpart)
 
 
 
 
-
+entire.data %>% select(CASEID, CASENO, ID, PSU, PSUSTRAT, STRATIF, YVID, YOID, YID) # ID = CASENO + PSU
 
 
 
